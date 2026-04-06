@@ -7,13 +7,21 @@ import com.bhavaniprasad.moneymanager.entity.ProfileEntity;
 import com.bhavaniprasad.moneymanager.repository.CategoryRepository;
 import com.bhavaniprasad.moneymanager.repository.ExpenseRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Set;
+
+import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.NOT_FOUND;
 
 @Service
 @RequiredArgsConstructor
@@ -23,13 +31,14 @@ public class ExpenseService {
     private final ExpenseRepository expenseRepository;
     private final ProfileService profileService;
     private final BrevoEmailService brevoEmailService;
+    private static final Set<String> ALLOWED_PAGE_SORT_FIELDS = Set.of("date", "amount", "name", "createdAt");
 
 
     //adds new expense to the database
     public ExpenseDTO addExpense(ExpenseDTO dto) {
         ProfileEntity profile = profileService.getCurrentProfile();
-        CategoryEntity category = categoryRepository.findById(dto.getCategoryId())
-                .orElseThrow(() -> new RuntimeException("Category not found"));
+        CategoryEntity category = categoryRepository.findByIdAndProfileId(dto.getCategoryId(), profile.getId())
+                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Category not found"));
         ExpenseEntity newExpense = toEntity(dto, profile, category);
         newExpense = expenseRepository.save(newExpense);
         return toDTO(newExpense);
@@ -41,25 +50,45 @@ public class ExpenseService {
         LocalDate now = LocalDate.now();
         LocalDate startDate = now.withDayOfMonth(1);
         LocalDate endDate = now.withDayOfMonth(now.lengthOfMonth());
-        List<ExpenseEntity> list = expenseRepository.findByProfileIdAndDateBetween(profile.getId(), startDate, endDate);
+        List<ExpenseEntity> list = expenseRepository.findByProfileIdAndDeletedAtIsNullAndDateBetween(profile.getId(), startDate, endDate);
         return list.stream().map(this::toDTO).toList();
     }
 
     //delete expense by id for current user
     public void deleteExpense(Long expenseId) {
         ProfileEntity profile = profileService.getCurrentProfile();
-        ExpenseEntity entity = expenseRepository.findById(expenseId)
-                .orElseThrow(() -> new RuntimeException("Expense not found"));
-        if(!entity.getProfile().getId().equals(profile.getId())) {
-            throw new RuntimeException("Unauthorized to delete this expense");
-        }
-        expenseRepository.delete(entity);
+        ExpenseEntity entity = expenseRepository.findByIdAndProfileIdAndDeletedAtIsNull(expenseId, profile.getId())
+                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Expense not found"));
+        entity.setDeletedAt(LocalDateTime.now());
+        expenseRepository.save(entity);
+    }
+
+    public ExpenseDTO getExpenseById(Long expenseId) {
+        ProfileEntity profile = profileService.getCurrentProfile();
+        ExpenseEntity entity = expenseRepository.findByIdAndProfileIdAndDeletedAtIsNull(expenseId, profile.getId())
+                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Expense not found"));
+        return toDTO(entity);
+    }
+
+    public ExpenseDTO updateExpense(Long expenseId, ExpenseDTO dto) {
+        ProfileEntity profile = profileService.getCurrentProfile();
+        ExpenseEntity existing = expenseRepository.findByIdAndProfileIdAndDeletedAtIsNull(expenseId, profile.getId())
+                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Expense not found"));
+        CategoryEntity category = categoryRepository.findByIdAndProfileId(dto.getCategoryId(), profile.getId())
+                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Category not found"));
+
+        existing.setName(dto.getName());
+        existing.setIcon(dto.getIcon());
+        existing.setAmount(dto.getAmount());
+        existing.setDate(dto.getDate());
+        existing.setCategory(category);
+        return toDTO(expenseRepository.save(existing));
     }
 
     //get latest 5 expenses for the current user
     public List<ExpenseDTO> getLatest5ExpensesForCurrentUser(){
         ProfileEntity profile = profileService.getCurrentProfile();
-        List<ExpenseEntity> list = expenseRepository.findTop5ByProfileIdOrderByDateDesc(profile.getId());
+        List<ExpenseEntity> list = expenseRepository.findTop5ByProfileIdAndDeletedAtIsNullOrderByDateDesc(profile.getId());
         return list.stream().map(this::toDTO).toList();
     }
 
@@ -72,14 +101,40 @@ public class ExpenseService {
 
     //filter expenses
     public List<ExpenseDTO> filterExpenses(LocalDate startDate, LocalDate endDate, String keyword, Sort sort) {
+        return filterExpenses(startDate, endDate, keyword, null, sort);
+    }
+
+    public List<ExpenseDTO> filterExpenses(LocalDate startDate, LocalDate endDate, String keyword, Long categoryId, Sort sort) {
+        if (startDate.isAfter(endDate)) {
+            throw new ResponseStatusException(BAD_REQUEST, "Start date cannot be after end date");
+        }
         ProfileEntity profile = profileService.getCurrentProfile();
-        List<ExpenseEntity> list = expenseRepository.findByProfileIdAndDateBetweenAndNameContainingIgnoreCase(profile.getId(), startDate, endDate, keyword, sort);
+        List<ExpenseEntity> list = expenseRepository.filterExpenses(profile.getId(), startDate, endDate, keyword, categoryId, sort);
         return list.stream().map(this::toDTO).toList();
+    }
+
+    public BigDecimal getTotalExpenseForCurrentUserBetween(LocalDate startDate, LocalDate endDate) {
+        ProfileEntity profile = profileService.getCurrentProfile();
+        return expenseRepository.findTotalExpenseByProfileIdAndDateBetween(profile.getId(), startDate, endDate);
+    }
+
+    public Page<ExpenseDTO> getExpensesPage(int page, int size, String keyword, String sortField, String sortDirection) {
+        ProfileEntity profile = profileService.getCurrentProfile();
+        String safeKeyword = keyword == null ? "" : keyword.trim();
+        Sort.Direction direction = "desc".equalsIgnoreCase(sortDirection) ? Sort.Direction.DESC : Sort.Direction.ASC;
+        String safeSortField = sortField == null || sortField.isBlank() ? "date" : sortField;
+        if (!ALLOWED_PAGE_SORT_FIELDS.contains(safeSortField)) {
+            throw new ResponseStatusException(BAD_REQUEST, "Invalid sort field");
+        }
+        Pageable pageable = PageRequest.of(page, size, Sort.by(direction, safeSortField));
+        return expenseRepository
+                .findByProfileIdAndDeletedAtIsNullAndNameContainingIgnoreCase(profile.getId(), safeKeyword, pageable)
+                .map(this::toDTO);
     }
 
     //Notifications
     public List<ExpenseDTO> getExpensesForUserOnDate(Long profileId, LocalDate date){
-        List<ExpenseEntity> list = expenseRepository.findByProfileIdAndDate(profileId, date);
+        List<ExpenseEntity> list = expenseRepository.findByProfileIdAndDeletedAtIsNullAndDate(profileId, date);
         return list.stream().map(this :: toDTO).toList();
     }
 
@@ -112,7 +167,7 @@ public class ExpenseService {
     public List<ExpenseDTO> getAllExpensesForExport() {
         ProfileEntity profile = profileService.getCurrentProfile();
         List<ExpenseEntity> list =
-                expenseRepository.findByProfileId(profile.getId());
+                expenseRepository.findByProfileIdAndDeletedAtIsNull(profile.getId());
         return list.stream().map(this::toDTO).toList();
     }
 

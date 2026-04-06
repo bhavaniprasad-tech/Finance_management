@@ -33,11 +33,16 @@ public class ProfileEntity {
     private LocalDateTime updatedAt;
     private Boolean isActive;
     private String activationToken;
+    @Enumerated(EnumType.STRING)
+    private UserRole role;
 
     @PrePersist
     public void prePersist() {
         if (this.isActive == null) {
             isActive = false;
+        }
+        if (this.role == null) {
+            role = UserRole.ANALYST;
         }
     }
 }

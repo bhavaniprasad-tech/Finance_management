@@ -2,14 +2,15 @@ package com.bhavaniprasad.moneymanager.controller;
 
 import com.bhavaniprasad.moneymanager.dto.AuthDTO;
 import com.bhavaniprasad.moneymanager.dto.ProfileDTO;
+import com.bhavaniprasad.moneymanager.dto.UserAccessUpdateDTO;
 import com.bhavaniprasad.moneymanager.service.ProfileService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 
-import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -20,7 +21,7 @@ public class ProfileController {
 
     @PostMapping("/register")
     public ResponseEntity<ProfileDTO> registerProfile(
-            @RequestBody ProfileDTO profileDTO
+            @Valid @RequestBody ProfileDTO profileDTO
     ) {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(profileService.registerProfile(profileDTO));
@@ -38,25 +39,27 @@ public class ProfileController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<Map<String, Object>> login(@RequestBody AuthDTO authDTO) {
-        try {
-            if (!profileService.isAccountActive(authDTO.getEmail())) {
-                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
-                        "message", "Account is not active. Please activate your account first."
-                ));
-            }
-            Map<String, Object> response = profileService.authenticateAndGenerateToken(authDTO);
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                    "message", e.getMessage()
-            ));
-        }
+    public ResponseEntity<Map<String, Object>> login(@Valid @RequestBody AuthDTO authDTO) {
+        Map<String, Object> response = profileService.authenticateAndGenerateToken(authDTO);
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/profile")
     public ResponseEntity<ProfileDTO> getPublicProfile() {
         ProfileDTO profileDTO = profileService.getPublicProfile(null);
         return ResponseEntity.ok(profileDTO);
+    }
+
+    @GetMapping("/admin/users")
+    public ResponseEntity<List<ProfileDTO>> getAllUsers() {
+        return ResponseEntity.ok(profileService.getAllProfiles());
+    }
+
+    @PutMapping("/admin/users/{userId}/access")
+    public ResponseEntity<ProfileDTO> updateUserAccess(
+            @PathVariable Long userId,
+            @Valid @RequestBody UserAccessUpdateDTO accessUpdateDTO
+    ) {
+        return ResponseEntity.ok(profileService.updateUserAccess(userId, accessUpdateDTO));
     }
 }

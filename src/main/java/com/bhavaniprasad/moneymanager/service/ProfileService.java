@@ -2,12 +2,16 @@ package com.bhavaniprasad.moneymanager.service;
 
 import com.bhavaniprasad.moneymanager.dto.AuthDTO;
 import com.bhavaniprasad.moneymanager.dto.ProfileDTO;
+import com.bhavaniprasad.moneymanager.dto.UserAccessUpdateDTO;
 import com.bhavaniprasad.moneymanager.entity.ProfileEntity;
+import com.bhavaniprasad.moneymanager.entity.UserRole;
 import com.bhavaniprasad.moneymanager.repository.ProfileRepository;
 import com.bhavaniprasad.moneymanager.util.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -15,10 +19,16 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+
+import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.CONFLICT;
+import static org.springframework.http.HttpStatus.FORBIDDEN;
+import static org.springframework.http.HttpStatus.NOT_FOUND;
 
 @Service
 @RequiredArgsConstructor
@@ -35,6 +45,9 @@ public class ProfileService {
     private String activationURL;
 
     public ProfileDTO registerProfile(ProfileDTO profileDTO) {
+        if (profileRepository.existsByEmail(profileDTO.getEmail())) {
+            throw new ResponseStatusException(CONFLICT, "Email is already registered");
+        }
         ProfileEntity newProfile = toEntity(profileDTO);
         newProfile.setActivationToken(UUID.randomUUID().toString());
         newProfile = profileRepository.save(newProfile);
@@ -53,6 +66,8 @@ public class ProfileService {
                 .email(profileDTO.getEmail())
                 .password(passwordEncoder.encode(profileDTO.getPassword()))
                 .profileImageUrl(profileDTO.getProfileImageUrl())
+                .isActive(profileDTO.getIsActive())
+                .role(profileDTO.getRole() != null ? profileDTO.getRole() : UserRole.ANALYST)
                 .createdAt(profileDTO.getCreatedAt())
                 .updatedAt(profileDTO.getUpdatedAt())
                 .build();
@@ -64,6 +79,8 @@ public class ProfileService {
                 .fullName(profileEntity.getFullName())
                 .email(profileEntity.getEmail())
                 .profileImageUrl(profileEntity.getProfileImageUrl())
+                .isActive(profileEntity.getIsActive())
+                .role(profileEntity.getRole())
                 .createdAt(profileEntity.getCreatedAt())
                 .updatedAt(profileEntity.getUpdatedAt())
                 .build();
@@ -104,9 +121,32 @@ public class ProfileService {
                 .fullName(currentUser.getFullName())
                 .email(currentUser.getEmail())
                 .profileImageUrl(currentUser.getProfileImageUrl())
+                .isActive(currentUser.getIsActive())
+                .role(currentUser.getRole())
                 .createdAt(currentUser.getCreatedAt())
                 .updatedAt(currentUser.getUpdatedAt())
                 .build();
+    }
+
+    public List<ProfileDTO> getAllProfiles() {
+        return profileRepository.findAllByOrderByCreatedAtDesc().stream().map(this::toDTO).toList();
+    }
+
+    public ProfileDTO updateUserAccess(Long userId, UserAccessUpdateDTO accessUpdateDTO) {
+        ProfileEntity current = getCurrentProfile();
+        ProfileEntity target = profileRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "User not found"));
+
+        if (current.getId().equals(target.getId()) && Boolean.FALSE.equals(accessUpdateDTO.getIsActive())) {
+            throw new ResponseStatusException(BAD_REQUEST, "You cannot deactivate your own account");
+        }
+        if (current.getId().equals(target.getId()) && accessUpdateDTO.getRole() != UserRole.ADMIN) {
+            throw new ResponseStatusException(BAD_REQUEST, "You cannot downgrade your own admin role");
+        }
+
+        target.setRole(accessUpdateDTO.getRole());
+        target.setIsActive(accessUpdateDTO.getIsActive());
+        return toDTO(profileRepository.save(target));
     }
 
     public Map<String, Object> authenticateAndGenerateToken(AuthDTO authDTO) {
@@ -129,8 +169,10 @@ public class ProfileService {
                     "user", getPublicProfile(authDTO.getEmail())
             );
 
-        } catch (Exception e) {
-            throw new RuntimeException("Invalid email or password");
+        } catch (DisabledException e) {
+            throw new ResponseStatusException(FORBIDDEN, "Account is inactive");
+        } catch (BadCredentialsException e) {
+            throw new ResponseStatusException(BAD_REQUEST, "Invalid email or password");
         }
     }
 

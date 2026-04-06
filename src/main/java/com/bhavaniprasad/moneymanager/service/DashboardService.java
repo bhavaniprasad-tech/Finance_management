@@ -1,15 +1,21 @@
 package com.bhavaniprasad.moneymanager.service;
 
+import com.bhavaniprasad.moneymanager.dto.CategorySummaryDTO;
+import com.bhavaniprasad.moneymanager.dto.DashboardSummaryDTO;
 import com.bhavaniprasad.moneymanager.dto.ExpenseDTO;
 import com.bhavaniprasad.moneymanager.dto.IncomeDTO;
+import com.bhavaniprasad.moneymanager.dto.MonthlyTrendDTO;
 import com.bhavaniprasad.moneymanager.dto.RecentTransactionDTO;
 import com.bhavaniprasad.moneymanager.entity.ProfileEntity;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.YearMonth;
+import java.util.ArrayList;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static java.util.stream.Stream.concat;
 
@@ -17,13 +23,15 @@ import static java.util.stream.Stream.concat;
 @RequiredArgsConstructor
 public class DashboardService {
 
+    private static final LocalDate ANALYTICS_START_DATE = LocalDate.of(1970, 1, 1);
+
     private final IncomeService incomeService;
     private final ExpenseService expenseService;
+    private final CategoryService categoryService;
     private final ProfileService profileService;
 
-    public Map<String, Object> getDashboard() {
+    public DashboardSummaryDTO getDashboard() {
         ProfileEntity profile = profileService.getCurrentProfile();
-        Map<String, Object> returnValue = new LinkedHashMap<>();
         List<IncomeDTO> latestIncomes = incomeService.getLatest5IncomesForCurrentUser();
         List<ExpenseDTO> latestExpenses = expenseService.getLatest5ExpensesForCurrentUser();
         List<RecentTransactionDTO> recentTransactions =
@@ -60,15 +68,56 @@ public class DashboardService {
                         return b.getCreatedAt().compareTo(a.getCreatedAt());
                     }
                     return cmp;
-                }).collect(Collectors.toList());
-        returnValue.put("totalBalance",
-                incomeService.getTotalIncomeForCurrentUser()
-                        .subtract(expenseService.getTotalExpenseForCurrentUser()));
-        returnValue.put("totalIncome", incomeService.getTotalIncomeForCurrentUser());
-        returnValue.put("totalExpense", expenseService.getTotalExpenseForCurrentUser());
-        returnValue.put("recent5Expenses", latestExpenses);
-        returnValue.put("recent5Incomes", latestIncomes);
-        returnValue.put("recentTransactions", recentTransactions);
-        return returnValue;
+                }).limit(10).collect(Collectors.toList());
+
+        BigDecimal totalIncome = incomeService.getTotalIncomeForCurrentUser();
+        BigDecimal totalExpense = expenseService.getTotalExpenseForCurrentUser();
+
+        return DashboardSummaryDTO.builder()
+                .totalBalance(totalIncome.subtract(totalExpense))
+                .totalIncome(totalIncome)
+                .totalExpense(totalExpense)
+                .recent5Expenses(latestExpenses)
+                .recent5Incomes(latestIncomes)
+                .recentTransactions(recentTransactions)
+                .categoryTotals(buildCategoryTotals())
+                .monthlyTrends(buildMonthlyTrends(6))
+                .build();
+    }
+
+    private List<CategorySummaryDTO> buildCategoryTotals() {
+        List<CategorySummaryDTO> summaries = new ArrayList<>();
+        categoryService.getCategoriesForCurrentUser().forEach(category -> {
+            BigDecimal total = "income".equalsIgnoreCase(category.getType())
+                    ? incomeService.filterIncomes(ANALYTICS_START_DATE, LocalDate.now(), "", category.getId(), org.springframework.data.domain.Sort.unsorted())
+                        .stream().map(IncomeDTO::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add)
+                    : expenseService.filterExpenses(ANALYTICS_START_DATE, LocalDate.now(), "", category.getId(), org.springframework.data.domain.Sort.unsorted())
+                        .stream().map(ExpenseDTO::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+            summaries.add(CategorySummaryDTO.builder()
+                    .category(category.getName())
+                    .type(category.getType())
+                    .total(total)
+                    .build());
+        });
+        return summaries;
+    }
+
+    private List<MonthlyTrendDTO> buildMonthlyTrends(int monthsBack) {
+        List<MonthlyTrendDTO> trends = new ArrayList<>();
+        YearMonth current = YearMonth.now();
+        for (int i = monthsBack - 1; i >= 0; i--) {
+            YearMonth month = current.minusMonths(i);
+            LocalDate start = month.atDay(1);
+            LocalDate end = month.atEndOfMonth();
+            BigDecimal income = incomeService.getTotalIncomeForCurrentUserBetween(start, end);
+            BigDecimal expense = expenseService.getTotalExpenseForCurrentUserBetween(start, end);
+            trends.add(MonthlyTrendDTO.builder()
+                    .month(month.toString())
+                    .income(income)
+                    .expense(expense)
+                    .net(income.subtract(expense))
+                    .build());
+        }
+        return trends;
     }
 }
