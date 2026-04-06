@@ -124,9 +124,3 @@ Current tests include:
 Set-Location "D:\Springprojects\moneymanager"
 .\mvnw.cmd test
 ```
-
-## Notes
-
-- If your IDE still shows `jakarta.validation` unresolved after pulling dependencies, refresh/reimport Maven project.
-- `target/` changes are generated build artifacts.
-
